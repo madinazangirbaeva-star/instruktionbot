@@ -1,11 +1,13 @@
 import asyncio
 import logging
-import google.generativeai as genai
+import random
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
-from config import BOT_TOKEN, GEMINI_API_KEY, CHANNEL_USERNAME
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from config import BOT_TOKEN, CHANNEL_USERNAME
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,118 +15,94 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    system_instruction="""Ты — дружелюбный помощник Telegram-канала «Нам забыли выдать инструкцию» (@instruktionforlife).
+# ─── Советы (случайные) ───────────────────────────────────────────────────────
 
-Канал помогает людям разобраться во взрослой жизни: бытовые лайфхаки, финансовая грамотность, психологическая поддержка, карьера, отношения. Переводит сложное на понятный язык.
+СОВЕТЫ = [
+    "Сделай одну маленькую задачу. Это лучше, чем ничего 💪",
+    "Если не знаешь, что делать — выпей воды и открой список задач 💧",
+    "Иногда план на день — просто пережить этот день 🌙",
+]
 
-Твои правила:
-1. Отвечай тепло, дружески, без пафоса — как умный друг, который разбирается в теме.
-2. Если вопрос про финансы, быт, карьеру или отношения — давай практичный совет.
-3. Если человек пишет, что ему плохо, руки опускаются, он устал или в кризисе — прежде всего выслушай и поддержи. Не торопись с советами. Напомни, что это нормально — просить помощь.
-4. Периодически упоминай, что в канале @instruktionforlife есть статьи по теме — но ненавязчиво.
-5. Не ставь диагнозов. При серьёзных психологических проблемах мягко рекомендуй обратиться к специалисту.
-6. Отвечай на русском языке.
-7. Не используй Markdown разметку — пиши обычным текстом без звёздочек и решёток.
-8. Не пиши длинные простыни — будь кратким и по делу."""
-)
+# ─── Состояния ────────────────────────────────────────────────────────────────
 
-chat_sessions: dict[int, any] = {}
+class Form(StatesGroup):
+    waiting_for_cry = State()
 
-def get_chat(user_id: int):
-    if user_id not in chat_sessions:
-        chat_sessions[user_id] = model.start_chat(history=[])
-    return chat_sessions[user_id]
+# ─── Клавиатура ───────────────────────────────────────────────────────────────
 
-def clear_chat(user_id: int):
-    chat_sessions[user_id] = model.start_chat(history=[])
-
-def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💰 Финансы", callback_data="topic_finance"),
-            InlineKeyboardButton(text="🏠 Быт", callback_data="topic_home"),
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📖 О нас"), KeyboardButton(text="💡 Советы")],
+            [KeyboardButton(text="😤 Крик души"), KeyboardButton(text="📢 Перейти в канал")],
         ],
-        [
-            InlineKeyboardButton(text="💼 Карьера", callback_data="topic_career"),
-            InlineKeyboardButton(text="❤️ Отношения", callback_data="topic_relations"),
-        ],
-        [
-            InlineKeyboardButton(text="🧠 Мне сейчас плохо", callback_data="topic_support"),
-        ],
-        [
-            InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/instruktionforlife"),
-        ],
-    ])
+        resize_keyboard=True
+    )
+
+# ─── Хэндлеры ─────────────────────────────────────────────────────────────────
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    clear_chat(message.from_user.id)
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     name = message.from_user.first_name or "друг"
     await message.answer(
         f"Привет, {name}! 👋\n\n"
-        "Я помощник канала Нам забыли выдать инструкцию — здесь про опору в жизни:\n"
+        "Я помощник канала Инструкция к жизни — здесь про опору в жизни:\n"
         "от бытовых лайфхаков до поддержки, когда руки опускаются.\n\n"
         "Можешь написать мне что угодно или выбери тему 👇",
         reply_markup=main_keyboard()
     )
 
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
+@dp.message(F.text == "📖 О нас")
+async def about(message: types.Message):
     await message.answer(
-        "Я умею:\n"
-        "• Отвечать на вопросы про финансы, быт, карьеру, отношения\n"
-        "• Поддержать, если тяжело\n"
-        "• Рекомендовать статьи из канала\n\n"
-        "Просто напиши что тебя волнует 💬\n\n"
-        "/start — начать заново\n"
-        "/clear — очистить историю диалога",
-        reply_markup=main_keyboard()
+        "Если тебе кажется, что ты не справляешься — тебе не кажется 😳\n\n"
+        "Иногда кажется, что всем вокруг выдали какую-то секретную методичку по взрослой жизни, а я в этот день просто прогулял 🌪\n\n"
+        "Все вокруг как будто знают, как выбирать нормальные продукты, как не впадать в ступор при виде налоговой квитанции и как, черт возьми, снимать квартиру, чтобы тебя не кинули на залог.\n\n"
+        "Если тебе знакома данная ситуация, то добро пожаловать в наш канал! Привет. Это «Инструкция к жизни, которой нет» 👋\n\n"
+        "Название ироничное, но цель у нас вполне серьезная — перестать паниковать и начать потихоньку разбираться. Мы создали этот канал, потому что сами до смерти устали от неопределенности.\n\n"
+        "О чем мы говорим:\n\n"
+        "👩‍💻 Про бытовуху, которая пугает: как съехать от родителей и не разориться, как накопить на отпуск, если в кармане только вера в светлое будущее, и как подписывать договоры, чтобы не продать душу.\n\n"
+        "😞 Про голову и чувства: что делать, когда кажется, что все успешнее тебя? Как пережить неловкость в компании? Как разрешить себе лениться?\n\n"
+        "🤩 Про возможности: где учиться, как искать работу и как не упустить шансы.\n\n"
+        "Взрослая жизнь — это не врожденный дар. Это навык. Как езда на велике: сначала больно и коленки в кровь, а потом ты просто едешь 🔥\n\n"
+        "Давайте пробовать вместе?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Перейти в канал", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")]
+        ])
     )
 
-@dp.message(Command("clear"))
-async def cmd_clear(message: types.Message):
-    clear_chat(message.from_user.id)
-    await message.answer("История очищена. Начнём с чистого листа 🌱", reply_markup=main_keyboard())
+@dp.message(F.text == "💡 Советы")
+async def advice(message: types.Message):
+    совет = random.choice(СОВЕТЫ)
+    await message.answer(совет)
 
-@dp.callback_query(F.data.startswith("topic_"))
-async def handle_topic(callback: types.CallbackQuery):
-    topic_map = {
-        "topic_finance": "Хочу разобраться с финансами. С чего начать?",
-        "topic_home": "Помоги с бытовыми вопросами — есть полезные лайфхаки?",
-        "topic_career": "Хочу поговорить про карьеру и работу.",
-        "topic_relations": "Хочу поговорить про отношения.",
-        "topic_support": "Мне сейчас плохо, руки опускаются.",
-    }
-    user_text = topic_map.get(callback.data, "Привет!")
-    await callback.answer()
-    await process_message(callback.message, callback.from_user.id, user_text)
+@dp.message(F.text == "😤 Крик души")
+async def cry(message: types.Message, state: FSMContext):
+    await state.set_state(Form.waiting_for_cry)
+    await message.answer("Расскажи — что случилось? Я слушаю 👂")
 
-@dp.message(F.text)
-async def handle_text(message: types.Message):
-    await process_message(message, message.from_user.id, message.text)
+@dp.message(Form.waiting_for_cry)
+async def handle_cry(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Я всё понимаю — держись. Главное выжить 💙\n\n"
+        "И помни — ты не один. В канале много таких же людей 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Перейти в канал", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")]
+        ])
+    )
 
-async def process_message(message: types.Message, user_id: int, user_text: str):
-    await bot.send_chat_action(message.chat.id, "typing")
-    chat = get_chat(user_id)
-    try:
-        response = await asyncio.to_thread(chat.send_message, user_text)
-        reply_text = response.text
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        reply_text = "Что-то пошло не так 😔 Попробуй чуть позже."
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Канал", url="https://t.me/instruktionforlife"),
-         InlineKeyboardButton(text="🏠 Меню", callback_data="topic_menu")]
-    ])
-    await message.answer(reply_text, reply_markup=kb)
+@dp.message(F.text == "📢 Перейти в канал")
+async def channel(message: types.Message):
+    await message.answer(
+        "Вот наш канал — там выходят статьи, лайфхаки и поддержка 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Инструкция к жизни", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")]
+        ])
+    )
 
-@dp.callback_query(F.data == "topic_menu")
-async def handle_menu(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.answer("Выбери тему или просто напиши 👇", reply_markup=main_keyboard())
+# ─── Запуск ───────────────────────────────────────────────────────────────────
 
 async def main():
     logger.info("Bot started")
