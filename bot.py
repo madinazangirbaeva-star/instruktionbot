@@ -1,22 +1,22 @@
 import asyncio
 import logging
+import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
-import anthropic
-from config import BOT_TOKEN, ANTHROPIC_API_KEY, CHANNEL_USERNAME
+from config import BOT_TOKEN, GEMINI_API_KEY, CHANNEL_USERNAME
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# ─── Системный промпт ────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = f"""Ты — дружелюбный помощник Telegram-канала «Нам забыли выдать инструкцию» (@instruktionforlife).
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction="""Ты — дружелюбный помощник Telegram-канала «Нам забыли выдать инструкцию» (@instruktionforlife).
 
 Канал помогает людям разобраться во взрослой жизни: бытовые лайфхаки, финансовая грамотность, психологическая поддержка, карьера, отношения. Переводит сложное на понятный язык.
 
@@ -24,30 +24,22 @@ SYSTEM_PROMPT = f"""Ты — дружелюбный помощник Telegram-к
 1. Отвечай тепло, дружески, без пафоса — как умный друг, который разбирается в теме.
 2. Если вопрос про финансы, быт, карьеру или отношения — давай практичный совет.
 3. Если человек пишет, что ему плохо, руки опускаются, он устал или в кризисе — прежде всего выслушай и поддержи. Не торопись с советами. Напомни, что это нормально — просить помощь.
-4. Периодически упоминай, что в канале {CHANNEL_USERNAME} есть статьи по теме — но ненавязчиво.
+4. Периодически упоминай, что в канале @instruktionforlife есть статьи по теме — но ненавязчиво.
 5. Не ставь диагнозов. При серьёзных психологических проблемах мягко рекомендуй обратиться к специалисту.
 6. Отвечай на русском языке.
-7. Не пиши длинные простыни — будь кратким и по делу."""
+7. Не используй Markdown разметку — пиши обычным текстом без звёздочек и решёток.
+8. Не пиши длинные простыни — будь кратким и по делу."""
+)
 
-# ─── История диалогов (в памяти) ─────────────────────────────────────────────
+chat_sessions: dict[int, any] = {}
 
-conversation_history: dict[int, list] = {}
+def get_chat(user_id: int):
+    if user_id not in chat_sessions:
+        chat_sessions[user_id] = model.start_chat(history=[])
+    return chat_sessions[user_id]
 
-def get_history(user_id: int) -> list:
-    return conversation_history.get(user_id, [])
-
-def add_to_history(user_id: int, role: str, content: str):
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
-    conversation_history[user_id].append({"role": role, "content": content})
-    # Храним только последние 20 сообщений
-    if len(conversation_history[user_id]) > 20:
-        conversation_history[user_id] = conversation_history[user_id][-20:]
-
-def clear_history(user_id: int):
-    conversation_history[user_id] = []
-
-# ─── Клавиатуры ───────────────────────────────────────────────────────────────
+def clear_chat(user_id: int):
+    chat_sessions[user_id] = model.start_chat(history=[])
 
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -63,22 +55,19 @@ def main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🧠 Мне сейчас плохо", callback_data="topic_support"),
         ],
         [
-            InlineKeyboardButton(text="📢 Перейти в канал", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}"),
+            InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/instruktionforlife"),
         ],
     ])
 
-# ─── Хэндлеры ─────────────────────────────────────────────────────────────────
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    clear_history(message.from_user.id)
+    clear_chat(message.from_user.id)
     name = message.from_user.first_name or "друг"
     await message.answer(
         f"Привет, {name}! 👋\n\n"
-        "Я помощник канала *Нам забыли выдать инструкцию* — здесь про опору в жизни:\n"
+        "Я помощник канала Нам забыли выдать инструкцию — здесь про опору в жизни:\n"
         "от бытовых лайфхаков до поддержки, когда руки опускаются.\n\n"
         "Можешь написать мне что угодно или выбери тему 👇",
-        parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
 
@@ -97,7 +86,7 @@ async def cmd_help(message: types.Message):
 
 @dp.message(Command("clear"))
 async def cmd_clear(message: types.Message):
-    clear_history(message.from_user.id)
+    clear_chat(message.from_user.id)
     await message.answer("История очищена. Начнём с чистого листа 🌱", reply_markup=main_keyboard())
 
 @dp.callback_query(F.data.startswith("topic_"))
@@ -118,41 +107,24 @@ async def handle_text(message: types.Message):
     await process_message(message, message.from_user.id, message.text)
 
 async def process_message(message: types.Message, user_id: int, user_text: str):
-    """Обращается к Claude и отправляет ответ."""
-    # Показываем "печатает..."
     await bot.send_chat_action(message.chat.id, "typing")
-
-    add_to_history(user_id, "user", user_text)
-    history = get_history(user_id)
-
+    chat = get_chat(user_id)
     try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            system=SYSTEM_PROMPT,
-            messages=history,
-        )
-        reply_text = response.content[0].text
+        response = await asyncio.to_thread(chat.send_message, user_text)
+        reply_text = response.text
     except Exception as e:
-        logger.error(f"Anthropic API error: {e}")
+        logger.error(f"Gemini API error: {e}")
         reply_text = "Что-то пошло не так 😔 Попробуй чуть позже."
-
-    add_to_history(user_id, "assistant", reply_text)
-
-    # Добавляем кнопку канала к каждому ответу
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Канал", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}"),
+        [InlineKeyboardButton(text="📢 Канал", url="https://t.me/instruktionforlife"),
          InlineKeyboardButton(text="🏠 Меню", callback_data="topic_menu")]
     ])
-
-    await message.answer(reply_text, reply_markup=kb, parse_mode="Markdown")
+    await message.answer(reply_text, reply_markup=kb)
 
 @dp.callback_query(F.data == "topic_menu")
 async def handle_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.answer("Выбери тему или просто напиши 👇", reply_markup=main_keyboard())
-
-# ─── Запуск ───────────────────────────────────────────────────────────────────
 
 async def main():
     logger.info("Bot started")
